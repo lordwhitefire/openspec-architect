@@ -13,7 +13,7 @@ an agent, following this recipe.
 
 | half | what it is | where it comes from at install |
 |---|---|---|
-| **ours** | the identity, the `architect-boundaries` skill (which openspec does not provide), the program, the mental model | **our package** `@lordwhiteire/openspec-architect` |
+| **ours** | the identity, the `architect-boundaries` skill (which openspec does not provide), the program, the mental model | **our package** `@lordwhitefire/openspec-architect` |
 | **openspec's** | openspec's skills and commands — "the everything" | **openspec itself**: the Fission-AI/OpenSpec npm package installed on that machine, invoked by our program at install time |
 
 **OpenSpec's half is never baked into our package.** It is generated at install by running
@@ -50,7 +50,7 @@ always attributed to one half.
    `.mental-model/architect/<path>`. Text entries carry an appended
    `<!-- generatedBy: "<version>" -->` note; binary entries are byte for byte.
    **No openspec skill or command may appear in this file** — `architect build` refuses if one does.
-7. Write `package.json`: `@lordwhiteire/openspec-architect`, `private: false`, `bin` `architect`, `main`
+7. Write `package.json`: `@lordwhitefire/openspec-architect`, `private: false`, `bin` `architect`, `main`
    `lib/master.mjs`, `files` = `bin/`, `lib/`, `payload/`, `publishConfig.registry` = GitHub Packages,
    `repository`, `license: UNLICENSED`.
 8. Write `README.md` naming the composite design, the manifest, what is not shipped (the 144 MB library),

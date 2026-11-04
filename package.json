@@ -1,6 +1,6 @@
 {
-  "name": "@lordwhiteire/openspec-architect",
-  "version": "1.0.0",
+  "name": "@lordwhitefire/openspec-architect",
+  "version": "1.0.1",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
