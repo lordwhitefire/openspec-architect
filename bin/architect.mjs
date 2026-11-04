@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // architect — the openspec-architect's program.
 //
 // A composite engine. It installs TWO halves and keeps them distinguishable:
