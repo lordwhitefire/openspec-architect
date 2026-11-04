@@ -1,0 +1,35 @@
+# Publish the engine to GitHub Packages.
+#
+# No personal token and no npm login: the workflow uses the GITHUB_TOKEN GitHub
+# grants to the run (permissions below), and the registry travels inside the
+# package.json's publishConfig, so nothing is written to ~/.npmrc and no secret
+# is created by hand.
+name: publish
+
+on:
+  push:
+    tags: ['v*']          # the publish trigger: git tag v1.0.0 && git push origin v1.0.0
+  workflow_dispatch:      # and by hand, from the Actions tab, for a re-run
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: prove what would ship
+        run: npm pack --dry-run
+
+      - name: publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

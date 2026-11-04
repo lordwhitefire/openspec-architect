@@ -1,0 +1,24 @@
+{
+  "name": "@lordwhiteire/openspec-architect",
+  "version": "1.0.0",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "private": false,
+  "type": "module",
+  "description": "The openspec-architect \u2014 a composite engine: our identity, skills and model, plus openspec's own skills and commands generated at install by openspec itself.",
+  "bin": {
+    "architect": "bin/architect.mjs"
+  },
+  "main": "lib/master.mjs",
+  "files": [
+    "bin/",
+    "lib/",
+    "payload/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lordwhitefire/openspec-architect.git"
+  },
+  "license": "UNLICENSED"
+}
