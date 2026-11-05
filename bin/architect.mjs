@@ -13,6 +13,7 @@
 // The manifest (.opencode/.architect-manifest.json) records every installed file and which half
 // it came from. `check` and `update` read it, so a change is always attributed.
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
@@ -24,14 +25,14 @@ const ROOT = path.join(HERE, "..")
 const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"))
 const VERSION = PKG.version
 
-const IDENTITY_REL = ".opencode/agent/openspec-architect.md"
-const BOUNDARIES_SKILL_REL = ".opencode/skills/architect-boundaries/SKILL.md"
-const AGENT_DIR = ".opencode/agent"
-const SKILLS_DIR = ".opencode/skills"
-const COMMANDS_DIR = path.join(".opencode", "commands")
+const IDENTITY_REL = "agent/openspec-architect.md"
+const BOUNDARIES_SKILL_REL = "skills/architect-boundaries/SKILL.md"
+const AGENT_DIR = "agent"
+const SKILLS_DIR = "skills"
+const COMMANDS_DIR = "commands"
 const DATA_DIR_NAME = "openspec"
-const STAMP_REL = path.join(".opencode", ".architect-stamp.json")
-const MANIFEST_REL = path.join(".opencode", ".architect-manifest.json")
+const STAMP_FILE = ".architect-stamp.json"
+const MANIFEST_FILE = ".architect-manifest.json"
 
 const STAMP_RE = /^\s*generatedBy:\s*["']?([^"'\n]+)["']?\s*$/m
 const NOTE_LINE = `<!-- generatedBy: "${VERSION}" -->\n`
@@ -45,15 +46,25 @@ const OURS = [
 function usage() {
   console.log(`architect — the openspec-architect's program (v${VERSION})
 
-  architect build             bake OUR half into this package (openspec's half is never baked)
-  architect init [path]       install both halves into a workspace and write the manifest
-  architect update [path]     refresh each half from its own source, reporting them separately
-  architect check [path]      report drift per half
-  architect --version         the program version, and what is installed here`)
+  architect build                    bake OUR half into this package (openspec's half is never baked)
+  architect init [path]              install both halves into a workspace and write the manifest (project)
+  architect init --global            write into ~/.config/opencode (global, every project)
+  architect update [path]            refresh each half from its own source, reporting them separately
+  architect update --global          same, for the global install
+  architect check [path]             report drift per half
+  architect check --global           same, for the global install
+  architect --version                the program version, and what is installed here`)
 }
 
-function resolveWorkspace(arg) {
-  return path.resolve(arg ?? process.cwd())
+/** Resolve the install target from args and flags. */
+function resolveTarget(arg, opts) {
+  if (opts.global) {
+    const configRoot = path.join(os.homedir(), ".config", "opencode")
+    return { configRoot, projectRoot: null, scope: "global", display: "~/.config/opencode" }
+  }
+  const projectRoot = path.resolve(arg ?? process.cwd())
+  const configRoot = path.join(projectRoot, ".opencode")
+  return { configRoot, projectRoot, scope: "project", display: projectRoot }
 }
 
 function stampMarkdown(template, version) {
@@ -97,18 +108,15 @@ function assertPathWithin(baseDir, target) {
   return abs
 }
 
-function modelContent(rel) {
-  const m = MODEL.find(([r]) => r === rel)
-  return m ? m[2] : null
-}
-
-function writeOurs(workspace, version) {
-  fs.mkdirSync(path.join(workspace, AGENT_DIR), { recursive: true })
-  fs.mkdirSync(path.join(workspace, SKILLS_DIR, "architect-boundaries"), { recursive: true })
-  fs.mkdirSync(path.join(workspace, DATA_DIR_NAME), { recursive: true })
+function writeOurs(target, version) {
+  fs.mkdirSync(path.join(target.configRoot, AGENT_DIR), { recursive: true })
+  fs.mkdirSync(path.join(target.configRoot, SKILLS_DIR, "architect-boundaries"), { recursive: true })
+  if (target.projectRoot) {
+    fs.mkdirSync(path.join(target.projectRoot, DATA_DIR_NAME), { recursive: true })
+  }
   const written = []
   for (const { rel, kind } of OURS) {
-    const abs = assertPathWithin(workspace, path.join(workspace, rel))
+    const abs = assertPathWithin(target.configRoot, path.join(target.configRoot, rel))
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     const content = contentFor(rel, version)
     fs.writeFileSync(abs, content)
@@ -147,10 +155,11 @@ function snapshotWorkspace(ws) {
   return out
 }
 
-function generateOpenSpecHalf(ws) {
+function generateOpenSpecHalf(target) {
   const version = openSpecOnPath()
   if (!version) return { found: false, version: null, files: [], error: "openspec not found on PATH" }
-  fs.mkdirSync(path.join(ws, ".opencode"), { recursive: true })
+  fs.mkdirSync(path.join(target.configRoot, ".opencode"), { recursive: true })
+  const ws = target.projectRoot || target.configRoot
   const before = snapshotWorkspace(ws)
   const r = spawnSync("openspec", ["init", ws, "--tools", "opencode", "--force"], {
     encoding: "utf8", timeout: 120000,
@@ -165,7 +174,7 @@ function generateOpenSpecHalf(ws) {
 
 // ─── manifest + stamp ─────────────────────────────────────────────────────────
 
-function writeManifest(ws, ours, openspec) {
+function writeManifest(target, ours, openspec) {
   const manifest = {
     engine: "openspec-architect",
     version: VERSION,
@@ -181,18 +190,22 @@ function writeManifest(ws, ours, openspec) {
       },
     },
   }
-  fs.writeFileSync(assertPathWithin(ws, path.join(ws, MANIFEST_REL)), `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+  fs.writeFileSync(assertPathWithin(target.configRoot, path.join(target.configRoot, MANIFEST_FILE)), `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
   return manifest
 }
 
-function readManifest(ws) {
-  try { return JSON.parse(fs.readFileSync(path.join(ws, MANIFEST_REL), "utf8")) } catch { return null }
+function readManifest(target) {
+  try { return JSON.parse(fs.readFileSync(path.join(target.configRoot, MANIFEST_FILE), "utf8")) } catch { return null }
 }
 
-function writeStamp(ws) {
+function writeStamp(target) {
   const stamp = { engine: "openspec-architect", version: VERSION, installedAt: new Date().toISOString() }
-  fs.writeFileSync(assertPathWithin(ws, path.join(ws, STAMP_REL)), `${JSON.stringify(stamp, null, 2)}\n`, "utf8")
+  fs.writeFileSync(assertPathWithin(target.configRoot, path.join(target.configRoot, STAMP_FILE)), `${JSON.stringify(stamp, null, 2)}\n`, "utf8")
   return stamp
+}
+
+function readStamp(target) {
+  try { return JSON.parse(fs.readFileSync(path.join(target.configRoot, STAMP_FILE), "utf8")) } catch { return null }
 }
 
 // ─── verbs ────────────────────────────────────────────────────────────────────
@@ -236,74 +249,75 @@ async function cmdBuild(opts) {
   console.log(`openspec's half is not baked — it is generated at install from the machine's openspec`)
 }
 
-function cmdInit(arg) {
-  const ws = resolveWorkspace(arg)
-  fs.mkdirSync(ws, { recursive: true })
-  const ours = writeOurs(ws, VERSION)
-  const openspec = generateOpenSpecHalf(ws)
-  writeManifest(ws, ours, openspec)
-  writeStamp(ws)
+function cmdInit(arg, opts) {
+  const target = resolveTarget(arg, opts)
+  const ours = writeOurs(target, VERSION)
+  const openspec = generateOpenSpecHalf(target)
+  writeManifest(target, ours, openspec)
+  writeStamp(target)
 
-  console.log(`openspec-architect setup complete (v${VERSION}) — a composite engine`)
-  console.log(`  workspace:  ${ws}`)
-  console.log(`  our half:    ${ours.length} files (identity, architect-boundaries, ${MODEL.length} model files)`)
+  console.log(`openspec-architect setup complete (v${VERSION}) — ${target.scope}-scoped composite engine`)
+  console.log(`  workspace:    ${target.display}`)
+  console.log(`  our half:      ${ours.length} files (identity, architect-boundaries, ${MODEL.length} model files)`)
   if (openspec.found) {
-    console.log(`  openspec:    v${openspec.version} — ${openspec.files.length} files generated by its own installer`)
+    console.log(`  openspec:      v${openspec.version} — ${openspec.files.length} files generated by its own installer`)
   } else {
-    console.log(`  openspec:    NOT FOUND — its half was NOT generated. Install openspec and run \`architect update\`.`)
+    console.log(`  openspec:      NOT FOUND — its half was NOT generated. Install openspec and run \`architect update\`.`)
   }
-  console.log(`  manifest:    ${MANIFEST_REL} — every file recorded with its half`)
-  console.log(`  stamp:       ${STAMP_REL} — v${VERSION}, written now`)
+  const manifestShown = target.scope === "global" ? `~/.config/opencode/${MANIFEST_FILE}` : `.opencode/${MANIFEST_FILE}`
+  const stampShown = target.scope === "global" ? `~/.config/opencode/${STAMP_FILE}` : `.opencode/${STAMP_FILE}`
+  console.log(`  manifest:      ${manifestShown} — every file recorded with its half`)
+  console.log(`  stamp:         ${stampShown} — v${VERSION}, written now`)
 }
 
-function cmdUpdate(arg) {
-  const ws = resolveWorkspace(arg)
-  const manifest = readManifest(ws)
+function cmdUpdate(arg, opts) {
+  const target = resolveTarget(arg, opts)
+  const manifest = readManifest(target)
   if (!manifest) {
-    console.log(`No manifest in ${ws}. Run: architect init "${ws}"`)
+    console.log(`No manifest in ${target.display}. Run: architect init${opts.global ? " --global" : ` "${target.projectRoot}"`}`)
     return
   }
   // ours: rewrite only when this program is NEWER than what is installed
   const installed = manifest.version
   const newer = installed !== VERSION
   if (newer) {
-    const freshOurs = writeOurs(ws, VERSION)
-    console.log(`ours:      ${installed} → ${VERSION} — ${freshOurs.length} files rewritten`)
+    const freshOurs = writeOurs(target, VERSION)
+    console.log(`ours:        ${installed} → ${VERSION} — ${freshOurs.length} files rewritten`)
   } else {
-    console.log(`ours:      already at ${VERSION} — nothing to rewrite`)
+    console.log(`ours:        already at ${VERSION} — nothing to rewrite`)
   }
   // openspec's half: refresh from openspec itself, whatever version is now installed
-  const openspec = generateOpenSpecHalf(ws)
+  const openspec = generateOpenSpecHalf(target)
   if (openspec.found) {
     const before = new Set(manifest.halves.openspec.files || [])
     const added = openspec.files.filter((f) => !before.has(f))
     const gone = [...before].filter((f) => !openspec.files.includes(f))
-    console.log(`openspec:  v${manifest.halves.openspec.version || "?"} → v${openspec.version} — ${openspec.files.length} files`)
-    if (added.length) console.log(`            added: ${added.join(", ")}`)
-    if (gone.length) console.log(`            removed: ${gone.join(", ")}`)
-    if (!added.length && !gone.length) console.log(`            no change`)
+    console.log(`openspec:    v${manifest.halves.openspec.version || "?"} → v${openspec.version} — ${openspec.files.length} files`)
+    if (added.length) console.log(`              added: ${added.join(", ")}`)
+    if (gone.length) console.log(`              removed: ${gone.join(", ")}`)
+    if (!added.length && !gone.length) console.log(`              no change`)
   } else {
-    console.log(`openspec:  NOT FOUND on PATH — its half cannot be refreshed`)
+    console.log(`openspec:    NOT FOUND on PATH — its half cannot be refreshed`)
   }
   const oursNow = OURS.map(({ rel, kind }) => ({ rel, half: "ours", kind }))
-  writeManifest(ws, oursNow, openspec)
-  writeStamp(ws)
+  writeManifest(target, oursNow, openspec)
+  writeStamp(target)
 }
 
-function cmdCheck(arg) {
-  const ws = resolveWorkspace(arg)
-  const manifest = readManifest(ws)
+function cmdCheck(arg, opts) {
+  const target = resolveTarget(arg, opts)
+  const manifest = readManifest(target)
   if (!manifest) {
-    console.log(`NOT RUN — no manifest in ${ws}; this workspace was not installed by this engine`)
+    console.log(`NOT RUN — no manifest in ${target.display}; this workspace was not installed by this engine`)
     process.exitCode = 2
     return
   }
   const problems = []
-  // ours
+  // ours — these are relative to configRoot (they have .opencode/ prefix)
   for (const rel of manifest.halves.ours.files) {
-    const abs = path.join(ws, rel)
+    const abs = path.join(target.configRoot, rel)
     if (!fs.existsSync(abs)) { problems.push(`ours: missing ${rel}`); continue }
-    if (rel === MANIFEST_REL || rel === STAMP_REL) continue
+    if (rel === MANIFEST_FILE || rel === STAMP_FILE) continue
     const expected = rel === IDENTITY_REL || rel === BOUNDARIES_SKILL_REL
       ? stampMarkdown(rel === IDENTITY_REL ? STAMPED.IDENTITY : STAMPED.BOUNDARIES_SKILL, manifest.version)
       : (() => { const m = MODEL.find(([r]) => r === rel); return m ? (m[1] === "base64" ? Buffer.from(m[2], "base64") : stampPlain(m[2])) : null })()
@@ -313,25 +327,26 @@ function cmdCheck(arg) {
       problems.push(`ours: drifted ${rel}`)
     }
   }
-  // openspec's half
+  // openspec's half — these are relative to the workspace root (projectRoot for project, configRoot for global)
   const ops = manifest.halves.openspec
+  const openspecBase = target.projectRoot || target.configRoot
   if (!ops.found) {
-    console.log(`openspec: absent at install — its half was never generated here`)
+    console.log(`openspec:    absent at install — its half was never generated here`)
   } else {
     const now = openSpecOnPath()
     if (!now) problems.push(`openspec: was v${ops.version} at install, but openspec is not on PATH now`)
     else if (now !== ops.version) problems.push(`openspec: installed against v${ops.version}, PATH now has v${now} — run architect update`)
     for (const rel of ops.files) {
-      if (!fs.existsSync(path.join(ws, rel))) problems.push(`openspec: missing ${rel}`)
+      if (!fs.existsSync(path.join(openspecBase, rel))) problems.push(`openspec: missing ${rel}`)
     }
-    console.log(`openspec: v${ops.version}, ${ops.files.length} files recorded`)
+    console.log(`openspec:    v${ops.version}, ${ops.files.length} files recorded`)
   }
   if (problems.length) {
     console.log(`DRIFT — ${problems.length} problem(s)`)
     for (const p of problems) console.log(`  ${p}`)
     process.exitCode = 1
   } else {
-    console.log(`✓ ${ws} is in sync with both halves (v${VERSION})`)
+    console.log(`✓ ${target.display} is in sync with both halves (v${VERSION})`)
   }
 }
 
@@ -341,16 +356,17 @@ const [cmd, ...rest] = process.argv.slice(2)
 const opts = {}
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--kit") { opts.kit = rest[i + 1]; i++ }
+  if (rest[i] === "--global") { opts.global = true }
 }
 try {
   switch (cmd) {
     case "build": await cmdBuild(opts); break
-    case "init": cmdInit(rest[0]); break
-    case "update": cmdUpdate(rest[0]); break
-    case "check": cmdCheck(rest[0]); break
+    case "init": cmdInit(rest[0], opts); break
+    case "update": cmdUpdate(rest[0], opts); break
+    case "check": cmdCheck(rest[0], opts); break
     case "--version":
     case "-v": {
-      const here = (() => { try { return JSON.parse(fs.readFileSync(path.join(process.cwd(), STAMP_REL), "utf8")) } catch { return null } })()
+      const here = readStamp({ configRoot: process.cwd() })
       console.log(VERSION)
       if (here) console.log(`installed here: v${here.version} (${here.installedAt})`)
       break
