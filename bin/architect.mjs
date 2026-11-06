@@ -207,20 +207,103 @@ function snapshotWorkspace(ws) {
   return out
 }
 
+function listTree(root) {
+  const out = []
+  const walk = (d) => {
+    let entries = []
+    try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else out.push(path.relative(root, p))
+    }
+  }
+  walk(root)
+  return out.sort()
+}
+
+function copyTreeInto(src, dst) {
+  fs.mkdirSync(dst, { recursive: true })
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name)
+    const d = path.join(dst, e.name)
+    if (e.isDirectory()) copyTreeInto(s, d)
+    else fs.copyFileSync(s, d)
+  }
+}
+
 function generateOpenSpecHalf(target) {
   const version = openSpecOnPath()
   if (!version) return { found: false, version: null, files: [], error: "openspec not found on PATH" }
-  const ws = target.projectRoot || target.configRoot
-  const before = snapshotWorkspace(ws)
-  const r = spawnSync("openspec", ["init", ws, "--tools", "opencode", "--force"], {
-    encoding: "utf8", timeout: 120000,
-  })
-  if (r.error || r.status !== 0) {
-    return { found: true, version, files: [], error: `openspec init failed: ${(r.stderr || r.stdout || "").trim().split("\n").pop()}` }
+
+  // Project scope: openspec writes <project>/.opencode/* — exactly where OpenCode reads it.
+  if (target.projectRoot) {
+    const ws = target.projectRoot
+    const before = snapshotWorkspace(ws)
+    const r = spawnSync("openspec", ["init", ws, "--tools", "opencode", "--force"], {
+      encoding: "utf8", timeout: 120000,
+    })
+    if (r.error || r.status !== 0) {
+      return { found: true, version, files: [], error: `openspec init failed: ${(r.stderr || r.stdout || "").trim().split("\n").pop()}` }
+    }
+    const after = snapshotWorkspace(ws)
+    const files = [...after].filter((f) => !before.has(f)).sort()
+    return { found: true, version, files, error: null }
   }
-  const after = snapshotWorkspace(ws)
-  const files = [...after].filter((f) => !before.has(f)).sort()
-  return { found: true, version, files, error: null }
+
+  // Global scope: openspec always writes <ws>/.opencode. Running it in ~/.config/opencode would
+  // nest the config root as ~/.config/opencode/.opencode, which OpenCode never reads. Run it in a
+  // scratch workspace and lift its .opencode/* into the config root at the level OpenCode scans.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openspec-architect-"))
+  try {
+    const r = spawnSync("openspec", ["init", tmp, "--tools", "opencode", "--force"], {
+      encoding: "utf8", timeout: 120000,
+    })
+    if (r.error || r.status !== 0) {
+      return { found: true, version, files: [], error: `openspec init failed: ${(r.stderr || r.stdout || "").trim().split("\n").pop()}` }
+    }
+    const produced = path.join(tmp, ".opencode")
+    if (!fs.existsSync(produced)) return { found: true, version, files: [], error: null }
+    const files = listTree(produced)
+    copyTreeInto(produced, target.configRoot)
+    return { found: true, version, files, error: null }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+// Older global installs ran openspec inside the config root and recorded .opencode/<...> paths.
+// Remove exactly those recorded files, then prune the empty legacy tree. Unrecorded files are
+// left alone rather than deleted blindly.
+function pruneLegacyNested(target, manifest) {
+  if (target.scope !== "global" || !manifest) return
+  const old = manifest.halves?.openspec?.files || []
+  const nested = old.filter((rel) => rel.startsWith(".opencode/"))
+  if (!nested.length) return
+  const nestedRoot = path.join(target.configRoot, ".opencode")
+  for (const rel of nested) {
+    const abs = assertPathWithin(target.configRoot, path.join(target.configRoot, rel))
+    try { fs.unlinkSync(abs) } catch {}
+  }
+  // Walk up from every removed file to .opencode/, then prune deepest-first so empty
+  // intermediate directories (skills/, commands/) go too.
+  const dirs = new Set()
+  for (const rel of nested) {
+    let d = path.dirname(path.join(target.configRoot, rel))
+    while (d === nestedRoot || d.startsWith(`${nestedRoot}${path.sep}`)) {
+      dirs.add(d)
+      if (d === nestedRoot) break
+      d = path.dirname(d)
+    }
+  }
+  for (const d of [...dirs].sort((a, b) => b.length - a.length)) {
+    try { fs.rmdirSync(d) } catch {}
+  }
+  if (!fs.existsSync(nestedRoot)) {
+    console.log("migrated:      removed the legacy .opencode/.opencode nesting")
+  } else {
+    console.log("warning:       legacy .opencode/ still holds unrecorded files — left in place")
+  }
 }
 
 // ─── manifest + stamp ─────────────────────────────────────────────────────────
@@ -302,6 +385,7 @@ async function cmdBuild(opts) {
 
 function cmdInit(arg, opts) {
   const target = resolveTarget(arg, opts)
+  pruneLegacyNested(target, readManifest(target))
   const ours = writeOurs(target, VERSION)
   const openspec = generateOpenSpecHalf(target)
   writeManifest(target, ours, openspec)
@@ -328,6 +412,7 @@ function cmdUpdate(arg, opts) {
     console.log(`No manifest in ${target.display}. Run: architect init${opts.global ? " --global" : ` "${target.projectRoot}"`}`)
     return
   }
+  pruneLegacyNested(target, manifest)
   // ours: rewrite only when this program is NEWER than what is installed
   const installed = manifest.version
   const newer = installed !== VERSION
