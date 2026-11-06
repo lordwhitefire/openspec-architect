@@ -53,7 +53,31 @@ function usage() {
   architect update --global          same, for the global install
   architect check [path]             report drift per half
   architect check --global           same, for the global install
-  architect --version                the program version, and what is installed here`)
+  architect --version                the program version, and what is installed here
+`)
+
+  // File layout — exactly what each install scope writes.
+  console.log(`
+  File layout
+
+  project — architect init /path/to/project
+    /path/to/project/
+      .opencode/
+        agent/openspec-architect.md
+        skills/<name>/SKILL.md
+        commands/
+        .mental-model/architect/
+        .architect-stamp.json
+      openspec/    (data workspace, empty)
+
+  global — architect init --global
+    ~/.config/opencode/
+      agent/openspec-architect.md
+      skills/<name>/SKILL.md
+      commands/
+      .mental-model/architect/
+      .architect-stamp.json
+      (no data workspace)`)
 }
 
 /** Resolve the install target from args and flags. */
@@ -68,17 +92,45 @@ function resolveTarget(arg, opts) {
 }
 
 function stampMarkdown(template, version) {
-  const m = template.match(/^---\n([\s\S]*?)\n---\n?/)
+  const m = template.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)
   if (!m) throw new Error("template has no YAML frontmatter to stamp")
-  const front = m[1]
   const body = template.slice(m[0].length)
-  const lines = front.split("\n")
+  const lines = m[1].split(/\r?\n/)
+
+  // Build the frontmatter with exactly one generatedBy, under a top-level metadata: block.
+  // Rules that matter:
+  //   - drop generatedBy at ANY indentation, so a stamp cannot hide inside permission: or
+  //     survive from an older metadata block;
+  //   - keep the first metadata: block and drop any later one WITH its children, otherwise
+  //     those children merge into the first block and duplicate its keys;
+  //   - insert the single stamp once, after the metadata: line.
   const out = []
-  for (const line of lines) {
-    if (STAMP_RE.test(line)) continue
+  let metadataAt = -1
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (/^\s*generatedBy\s*:/.test(line)) { i++; continue }
+    if (/^metadata\s*:\s*$/.test(line)) {
+      if (metadataAt !== -1) {
+        i++
+        while (i < lines.length && (/^\s+\S/.test(lines[i]) || lines[i].trim() === "")) i++
+        continue
+      }
+      out.push("metadata:")
+      metadataAt = out.length - 1
+      i++
+      continue
+    }
     out.push(line)
+    i++
   }
-  out.push(`  generatedBy: "${version}"`)
+
+  if (metadataAt === -1) {
+    out.push("metadata:")
+    metadataAt = out.length - 1
+  }
+  out.splice(metadataAt + 1, 0, `  generatedBy: "${version}"`)
+
   return `---\n${out.join("\n")}\n---\n${body}`
 }
 
@@ -158,7 +210,6 @@ function snapshotWorkspace(ws) {
 function generateOpenSpecHalf(target) {
   const version = openSpecOnPath()
   if (!version) return { found: false, version: null, files: [], error: "openspec not found on PATH" }
-  fs.mkdirSync(path.join(target.configRoot, ".opencode"), { recursive: true })
   const ws = target.projectRoot || target.configRoot
   const before = snapshotWorkspace(ws)
   const r = spawnSync("openspec", ["init", ws, "--tools", "opencode", "--force"], {
